@@ -6,9 +6,9 @@ Estrutura espelhada do ambiente local.
 CTF/
 ├── THM/
 │   ├── Easy/
+│   │   └── RootMe/  # RootMe - upload bypass + SUID python privesc
 │   ├── Medium/
-│   ├── Hard/
-│   └── RootMe/      # RootMe - upload bypass + SUID python privesc
+│   └── Hard/
 └── HTB/
     ├── Easy/
     ├── Medium/
