@@ -26,6 +26,8 @@ Respondeu. E o `ttl=62` já me deu um spoilerzinho: é Linux. Nem sabia ainda o 
 TARGET=10.67.188.203
 ```
 
+![exportando o alvo](pt2.gif)
+
 Exportei numa variável porque eu tenho preguiça de digitar IP toda hora. Preguiça é a mãe da automação, dizem.
 
 ## 1. Nmap: o que esse trem tá rodando?
