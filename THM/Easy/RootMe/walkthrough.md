@@ -10,6 +10,8 @@ Toda vez é o mesmo ritual: eu juro que a VPN tá conectada, ela jura que não. 
 ip a show tun0
 ```
 
+![checando o tun0](teste.gif)
+
 Apareceu `192.168.129.84`. Beleza, tô dentro da rede da THM. Anotei num papelzinho do lado do teclado porque eu SEMPRE esqueço esse número na hora do reverse shell e depois fico caçando.
 
 Subi a máquina no site, peguei o IP do alvo: `10.67.188.203`. Primeiro teste de vida:
